@@ -303,38 +303,64 @@ router.post('/import/excel', uploadExcel.single('file'), async (req, res) => {
       else if (hn.includes('سنة') || hn.includes('صنع') || hn.includes('موديل')) colMap.year = i;
     });
 
+    // Parse all rows first (no DB yet)
+    const parsed = [];
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      if (!row || row.every(c => !c)) continue;
+      parsed.push({
+        vin:       colMap.vin       !== undefined ? (String(row[colMap.vin]       || '').trim() || null) : null,
+        pl:        colMap.plate_letters !== undefined ? (String(row[colMap.plate_letters] || '').trim() || null) : null,
+        pn:        colMap.plate_numbers !== undefined ? (String(row[colMap.plate_numbers] || '').trim() || null) : null,
+        ownerName: colMap.owner     !== undefined ? (String(row[colMap.owner]     || '').trim() || null) : null,
+        brand:     colMap.brand     !== undefined ? (String(row[colMap.brand]     || '').trim() || null) : null,
+        model:     colMap.model     !== undefined ? (String(row[colMap.model]     || '').trim() || null) : null,
+        color:     colMap.color     !== undefined ? (String(row[colMap.color]     || '').trim() || null) : null,
+        year:      colMap.year      !== undefined ? (Number(row[colMap.year])     || null)               : null,
+      });
+    }
+
     const client = await db.connect();
     try {
       await client.query('BEGIN');
+
+      // 1. Batch-insert all unique owners (2 queries total)
+      const ownerNames = [...new Set(parsed.map(r => r.ownerName).filter(Boolean))];
+      if (ownerNames.length) {
+        const placeholders = ownerNames.map((_, i) => `($${i + 1})`).join(',');
+        await client.query(
+          `INSERT INTO owners (name) VALUES ${placeholders} ON CONFLICT DO NOTHING`,
+          ownerNames
+        );
+      }
+      const { rows: ownerRows } = await client.query('SELECT id, name FROM owners');
+      const ownerMap = Object.fromEntries(ownerRows.map(o => [o.name, o.id]));
+
+      // 2. Get current max sequence_no (1 query)
       const { rows: seqRows } = await client.query('SELECT MAX(sequence_no) as m FROM vehicles');
       let maxSeq = Number(seqRows[0].m) || 0;
 
-      for (let i = 1; i < rows.length; i++) {
-        const row = rows[i];
-        if (!row || row.every(c => !c)) continue;
-        const vin = colMap.vin !== undefined ? String(row[colMap.vin] || '').trim() : null;
-        const pl = colMap.plate_letters !== undefined ? String(row[colMap.plate_letters] || '').trim() : null;
-        const pn = colMap.plate_numbers !== undefined ? String(row[colMap.plate_numbers] || '').trim() : null;
-        const ownerName = colMap.owner !== undefined ? String(row[colMap.owner] || '').trim() : null;
-        const brand = colMap.brand !== undefined ? String(row[colMap.brand] || '').trim() : null;
-        const model = colMap.model !== undefined ? String(row[colMap.model] || '').trim() : null;
-        const color = colMap.color !== undefined ? String(row[colMap.color] || '').trim() : null;
-        const year = colMap.year !== undefined ? Number(row[colMap.year]) || null : null;
-
-        let owner_id = null;
-        if (ownerName) {
-          await client.query('INSERT INTO owners (name) VALUES ($1) ON CONFLICT DO NOTHING', [ownerName]);
-          const { rows: ownerRows } = await client.query('SELECT id FROM owners WHERE name = $1', [ownerName]);
-          if (ownerRows[0]) owner_id = ownerRows[0].id;
+      // 3. Batch-insert all vehicles (1 query)
+      if (parsed.length) {
+        const vals = [], params = [];
+        let p = 1;
+        for (const r of parsed) {
+          maxSeq++;
+          vals.push(`($${p},$${p+1},$${p+2},$${p+3},$${p+4},$${p+5},$${p+6},$${p+7},$${p+8},NOW(),NOW())`);
+          params.push(maxSeq, r.vin, r.pl, r.pn, r.ownerName ? (ownerMap[r.ownerName] || null) : null,
+                       r.brand, r.model, r.color, r.year);
+          p += 9;
         }
-        maxSeq++;
-        const { rowCount } = await client.query(`
-          INSERT INTO vehicles (sequence_no, vin, plate_letters, plate_numbers, owner_id, brand, model, color, year, entry_time, updated_at)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())
+        const { rows: inserted } = await client.query(`
+          INSERT INTO vehicles (sequence_no,vin,plate_letters,plate_numbers,owner_id,brand,model,color,year,entry_time,updated_at)
+          VALUES ${vals.join(',')}
           ON CONFLICT (vin) DO NOTHING
-        `, [maxSeq, vin || null, pl || null, pn || null, owner_id, brand || null, model || null, color || null, year]);
-        if (rowCount > 0) imported++; else skipped++;
+          RETURNING id
+        `, params);
+        imported = inserted.length;
+        skipped  = parsed.length - imported;
       }
+
       await client.query('COMMIT');
     } catch (e) {
       await client.query('ROLLBACK');
