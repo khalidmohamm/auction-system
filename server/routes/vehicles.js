@@ -280,68 +280,75 @@ router.delete('/:id/images/:imgId', async (req, res) => {
 // POST import Excel
 router.post('/import/excel', uploadExcel.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'لم يتم رفع الملف' });
-  const wb = XLSX.readFile(req.file.path);
-  const ws = wb.Sheets[wb.SheetNames[0]];
-  const rows = XLSX.utils.sheet_to_json(ws, { header: 1 });
-  if (rows.length < 2) return res.status(400).json({ error: 'الملف فارغ' });
 
-  const headers = rows[0];
-  const colMap = {};
-  headers.forEach((h, i) => {
-    if (!h) return;
-    const hn = String(h).trim();
-    if (hn.includes('هيكل')) colMap.vin = i;
-    else if (hn.includes('أحرف') || hn.includes('احرف')) colMap.plate_letters = i;
-    else if (hn.includes('أرقام') || hn.includes('ارقام')) colMap.plate_numbers = i;
-    else if (hn.includes('مالك') || hn.includes('المالك')) colMap.owner = i;
-    else if (hn.includes('تجارية') || hn.includes('علامة')) colMap.brand = i;
-    else if (hn.includes('طراز')) colMap.model = i;
-    else if (hn.includes('لون') || hn.includes('اللون')) colMap.color = i;
-    else if (hn.includes('سنة') || hn.includes('صنع')) colMap.year = i;
-  });
-
-  const client = await db.connect();
   let imported = 0, skipped = 0;
   try {
-    await client.query('BEGIN');
-    const { rows: seqRows } = await client.query('SELECT MAX(sequence_no) as m FROM vehicles');
-    let maxSeq = Number(seqRows[0].m) || 0;
+    const wb = XLSX.readFile(req.file.path);
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(ws, { header: 1 });
+    if (rows.length < 2) return res.status(400).json({ error: 'الملف فارغ' });
 
-    for (let i = 1; i < rows.length; i++) {
-      const row = rows[i];
-      if (!row || row.every(c => !c)) continue;
-      const vin = colMap.vin !== undefined ? String(row[colMap.vin] || '').trim() : null;
-      const pl = colMap.plate_letters !== undefined ? String(row[colMap.plate_letters] || '').trim() : null;
-      const pn = colMap.plate_numbers !== undefined ? String(row[colMap.plate_numbers] || '').trim() : null;
-      const ownerName = colMap.owner !== undefined ? String(row[colMap.owner] || '').trim() : null;
-      const brand = colMap.brand !== undefined ? String(row[colMap.brand] || '').trim() : null;
-      const model = colMap.model !== undefined ? String(row[colMap.model] || '').trim() : null;
-      const color = colMap.color !== undefined ? String(row[colMap.color] || '').trim() : null;
-      const year = colMap.year !== undefined ? Number(row[colMap.year]) || null : null;
+    const headers = rows[0];
+    const colMap = {};
+    headers.forEach((h, i) => {
+      if (!h) return;
+      const hn = String(h).trim();
+      if (hn.includes('هيكل')) colMap.vin = i;
+      else if (hn.includes('أحرف') || hn.includes('احرف')) colMap.plate_letters = i;
+      else if (hn.includes('أرقام') || hn.includes('ارقام')) colMap.plate_numbers = i;
+      else if (hn.includes('مالك') || hn.includes('المالك') || hn.includes('اسم المالك')) colMap.owner = i;
+      else if (hn.includes('تجارية') || hn.includes('علامة') || hn.includes('ماركة')) colMap.brand = i;
+      else if (hn.includes('طراز')) colMap.model = i;
+      else if (hn.includes('لون') || hn.includes('اللون')) colMap.color = i;
+      else if (hn.includes('سنة') || hn.includes('صنع') || hn.includes('موديل')) colMap.year = i;
+    });
 
-      let owner_id = null;
-      if (ownerName) {
-        await client.query('INSERT INTO owners (name) VALUES ($1) ON CONFLICT DO NOTHING', [ownerName]);
-        const { rows: ownerRows } = await client.query('SELECT id FROM owners WHERE name = $1', [ownerName]);
-        if (ownerRows[0]) owner_id = ownerRows[0].id;
+    const client = await db.connect();
+    try {
+      await client.query('BEGIN');
+      const { rows: seqRows } = await client.query('SELECT MAX(sequence_no) as m FROM vehicles');
+      let maxSeq = Number(seqRows[0].m) || 0;
+
+      for (let i = 1; i < rows.length; i++) {
+        const row = rows[i];
+        if (!row || row.every(c => !c)) continue;
+        const vin = colMap.vin !== undefined ? String(row[colMap.vin] || '').trim() : null;
+        const pl = colMap.plate_letters !== undefined ? String(row[colMap.plate_letters] || '').trim() : null;
+        const pn = colMap.plate_numbers !== undefined ? String(row[colMap.plate_numbers] || '').trim() : null;
+        const ownerName = colMap.owner !== undefined ? String(row[colMap.owner] || '').trim() : null;
+        const brand = colMap.brand !== undefined ? String(row[colMap.brand] || '').trim() : null;
+        const model = colMap.model !== undefined ? String(row[colMap.model] || '').trim() : null;
+        const color = colMap.color !== undefined ? String(row[colMap.color] || '').trim() : null;
+        const year = colMap.year !== undefined ? Number(row[colMap.year]) || null : null;
+
+        let owner_id = null;
+        if (ownerName) {
+          await client.query('INSERT INTO owners (name) VALUES ($1) ON CONFLICT DO NOTHING', [ownerName]);
+          const { rows: ownerRows } = await client.query('SELECT id FROM owners WHERE name = $1', [ownerName]);
+          if (ownerRows[0]) owner_id = ownerRows[0].id;
+        }
+        maxSeq++;
+        const { rowCount } = await client.query(`
+          INSERT INTO vehicles (sequence_no, vin, plate_letters, plate_numbers, owner_id, brand, model, color, year, entry_time, updated_at)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())
+          ON CONFLICT (vin) DO NOTHING
+        `, [maxSeq, vin || null, pl || null, pn || null, owner_id, brand || null, model || null, color || null, year]);
+        if (rowCount > 0) imported++; else skipped++;
       }
-      maxSeq++;
-      const { rowCount } = await client.query(`
-        INSERT INTO vehicles (sequence_no, vin, plate_letters, plate_numbers, owner_id, brand, model, color, year, entry_time, updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())
-        ON CONFLICT (vin) DO NOTHING
-      `, [maxSeq, vin || null, pl, pn, owner_id, brand, model, color, year]);
-      if (rowCount > 0) imported++; else skipped++;
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK');
+      throw e;
+    } finally {
+      client.release();
     }
-    await client.query('COMMIT');
+
+    res.json({ imported, skipped, total: rows.length - 1 });
   } catch (e) {
-    await client.query('ROLLBACK');
-    return res.status(500).json({ error: 'خطأ في الاستيراد', detail: e.message });
+    res.status(500).json({ error: 'خطأ في الاستيراد', detail: e.message });
   } finally {
-    client.release();
-    fs.unlinkSync(req.file.path);
+    try { fs.unlinkSync(req.file.path); } catch {}
   }
-  res.json({ imported, skipped, total: rows.length - 1 });
 });
 
 // GET export Excel
