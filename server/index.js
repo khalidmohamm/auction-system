@@ -29,6 +29,12 @@ if (fs.existsSync(buildPath)) {
   });
 }
 
+// Global error handler — returns JSON instead of HTML
+app.use((err, req, res, next) => {
+  console.error('Server error:', err.message);
+  res.status(500).json({ error: 'خطأ في الخادم', detail: err.message });
+});
+
 app.listen(PORT, () => {
   console.log(`\n✅ الخادم يعمل على المنفذ ${PORT}`);
   console.log(`🌐 افتح المتصفح على: http://localhost:${PORT}\n`);
