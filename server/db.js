@@ -11,7 +11,7 @@ function resolveConnectionString(url) {
   const m = url.match(/^postgresql:\/\/postgres:(.+)@db\.([^.]+)\.supabase\.co:5432\/postgres$/);
   if (m) {
     const [, password, projectId] = m;
-    return `postgresql://postgres.${projectId}:${password}@aws-0-ap-south-1.pooler.supabase.com:5432/postgres`;
+    return `postgresql://postgres.${projectId}:${password}@aws-1-ap-south-1.pooler.supabase.com:5432/postgres`;
   }
   return url;
 }
